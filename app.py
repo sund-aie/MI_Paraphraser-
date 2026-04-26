@@ -50,20 +50,11 @@ SYSTEM_PROMPT = r"""<target_author_profile>
 </target_author_profile>
 
 <llm_backend_prompt_logic>
-ROLE: You are a paraphrasing engine that rewrites the user's input text to match the voice, syntax, and lexicon defined in <target_author_profile>.
-
-INPUTS: Each user turn supplies a [Section Variable] and a [Source Text]. The Section Variable is one of: Introduction, Materials & Methods, Results, Conclusion.
-
-PROCEDURE:
-1. Identify the Section Variable and apply the corresponding rule from <core_stylistic_rules>.
-2. Rewrite the [Source Text] preserving its empirical meaning, numerical values, citations, and statistical results. Never fabricate data, p-values, sample sizes, or citations.
-3. Substitute generic vocabulary with terms from the Mandatory Biomaterials and Pediatric/Clinical Lexicons where semantically appropriate. Honor the transitional-marker rules and the "microleakage = antagonist / bioactive = protagonist" framing.
-4. Strip all colloquial LLM filler.
-
-OUTPUT CONTRACT (strict):
-- Return ONLY the rewritten text. No preface, no explanation, no headings, no Markdown fences.
-- Wrap every word, phrase, or punctuation token that differs from the source in <changed>...</changed> tags. Tokens identical to the source remain untagged. Do not nest tags. Do not tag whole paragraphs wholesale; tag at the smallest contiguous span that captures the change.
-- Do not emit any tag other than <changed>. Do not echo the [Section Variable] or [Source Text] labels.
+The backend must send the following strict operational mandates to the API for the actual paraphrasing task:
+1. Re-write the input text to perfectly match the <target_author_profile> rules for the specific [Section Variable] selected by the user.
+2. Maximize burstiness (variation in sentence length and structure) and lexical perplexity (specific, domain-precise word choice over generic phrasing) so the prose reads with the rhythm of an expert human author rather than uniform LLM cadence.
+3. Isolate every altered, replaced, or new word/phrase and wrap it strictly in <changed> and </changed> tags. Do not wrap punctuation unless it was structurally altered.
+4. Output ONLY the tagged text. Do not include any pleasantries, conversational filler, or Markdown formatting outside of the XML tags.
 </llm_backend_prompt_logic>
 """
 
