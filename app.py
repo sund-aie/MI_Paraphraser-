@@ -1,24 +1,26 @@
-"""MI Paraphraser — desktop GUI for section-aware academic paraphrasing.
+"""MI Paraphraser — fully local desktop GUI for section-aware academic paraphrasing.
 
-Tkinter front-end + Anthropic Claude back-end. The model is instructed to wrap
-every altered word/phrase in <changed>...</changed> tags; the UI strips the
-tags and highlights the content in the output pane.
+Tkinter front-end + local Ollama back-end. No internet connection or API key
+required. The model is instructed to wrap every altered word/phrase in
+<changed>...</changed> tags; the UI strips the tags and highlights the
+content in the output pane.
 """
 
 from __future__ import annotations
 
-import os
+import json
 import re
 import threading
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
 
-from anthropic import Anthropic
+import requests
 
 
 SECTIONS = ["Introduction", "Materials & Methods", "Results", "Conclusion"]
-MODEL_ID = "claude-opus-4-7"
-MAX_TOKENS = 4096
+DEFAULT_MODEL = "llama3.1"
+OLLAMA_URL = "http://localhost:11434/api/generate"
+REQUEST_TIMEOUT = 300  # seconds; local inference can be slow on first call
 
 SYSTEM_PROMPT = r"""<target_author_profile>
 <author_identity>Dr. Maria Ibrahim, Assistant Professor, Preventive Dental Sciences (Pediatric Dentistry & Dental Biomaterials), Imam Abdulrahman Bin Faisal University</author_identity>
@@ -60,24 +62,41 @@ The backend must send the following strict operational mandates to the API for t
 
 
 # ---------------------------------------------------------------------------
-# Anthropic call
+# Ollama call (local, offline)
 # ---------------------------------------------------------------------------
 
-def call_paraphraser(section: str, source_text: str) -> str:
-    client = Anthropic()
+def call_paraphraser(model: str, section: str, source_text: str) -> str:
     user_message = (
         f"[Section Variable]: {section}\n"
         f"[Source Text]:\n{source_text}"
     )
-    response = client.messages.create(
-        model=MODEL_ID,
-        max_tokens=MAX_TOKENS,
-        system=SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_message}],
-    )
-    return "".join(
-        block.text for block in response.content if getattr(block, "type", None) == "text"
-    )
+    payload = {
+        "model": model,
+        "system": SYSTEM_PROMPT,
+        "prompt": user_message,
+        "stream": False,
+    }
+    try:
+        response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
+    except requests.ConnectionError as exc:
+        raise RuntimeError(
+            "Could not reach Ollama at http://localhost:11434. "
+            "Is the Ollama daemon running? Start it with `ollama serve`."
+        ) from exc
+
+    if response.status_code == 404:
+        raise RuntimeError(
+            f"Ollama reports model '{model}' is not available locally. "
+            f"Pull it first: `ollama pull {model}`."
+        )
+    response.raise_for_status()
+
+    try:
+        data = response.json()
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Ollama returned non-JSON response: {response.text[:200]}") from exc
+
+    return data.get("response", "")
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +148,11 @@ class ParaphraserApp(tk.Tk):
         )
         self.section_dropdown.pack(side="left", padx=(6, 18))
 
+        ttk.Label(controls, text="Ollama model:").pack(side="left")
+        self.model_var = tk.StringVar(value=DEFAULT_MODEL)
+        self.model_entry = ttk.Entry(controls, textvariable=self.model_var, width=20)
+        self.model_entry.pack(side="left", padx=(6, 18))
+
         self.execute_button = ttk.Button(
             controls, text="Execute Paraphrase", command=self.on_execute
         )
@@ -175,25 +199,22 @@ class ParaphraserApp(tk.Tk):
         if not source_text:
             messagebox.showwarning("Empty input", "Please paste source text first.")
             return
-        if not os.environ.get("ANTHROPIC_API_KEY"):
-            messagebox.showerror(
-                "Missing API key",
-                "ANTHROPIC_API_KEY is not set in the environment.",
-            )
-            return
+        model = self.model_var.get().strip() or DEFAULT_MODEL
 
         section = self.section_var.get()
         self.execute_button.configure(state="disabled")
-        self.status_var.set(f"Calling Claude ({MODEL_ID}) for {section}…")
+        self.status_var.set(f"Querying Ollama ({model}) for {section}…")
 
         thread = threading.Thread(
-            target=self._run_request, args=(section, source_text), daemon=True
+            target=self._run_request,
+            args=(model, section, source_text),
+            daemon=True,
         )
         thread.start()
 
-    def _run_request(self, section: str, source_text: str) -> None:
+    def _run_request(self, model: str, section: str, source_text: str) -> None:
         try:
-            raw = call_paraphraser(section, source_text)
+            raw = call_paraphraser(model, section, source_text)
             self.after(0, self._render_output, raw)
         except Exception as exc:  # noqa: BLE001 — surface any backend error
             self.after(0, self._render_error, exc)
@@ -214,7 +235,7 @@ class ParaphraserApp(tk.Tk):
     def _render_error(self, exc: BaseException) -> None:
         self.status_var.set("Error.")
         self.execute_button.configure(state="normal")
-        messagebox.showerror("API error", f"{type(exc).__name__}: {exc}")
+        messagebox.showerror("Ollama error", f"{type(exc).__name__}: {exc}")
 
 
 def main() -> None:
