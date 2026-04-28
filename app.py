@@ -18,9 +18,15 @@ import requests
 
 
 SECTIONS = ["Introduction", "Materials & Methods", "Results", "Conclusion"]
-DEFAULT_MODEL = "qwen3.6:27b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
 REQUEST_TIMEOUT = 300  # seconds; local inference can be slow on first call
+TAGS_TIMEOUT = 10
+
+# Models with at least this many billion parameters are flagged as
+# recommended for the dense, instruction-heavy paraphrasing task.
+RECOMMENDED_MIN_PARAMS_B = 13.0
+RECOMMENDED_SUFFIX = " (recommended)"
 
 SYSTEM_PROMPT = r"""<target_author_profile>
 <author_identity>Dr. Maria Ibrahim, Assistant Professor, Preventive Dental Sciences (Pediatric Dentistry & Dental Biomaterials), Imam Abdulrahman Bin Faisal University</author_identity>
@@ -99,6 +105,34 @@ def call_paraphraser(model: str, section: str, source_text: str) -> str:
     return data.get("response", "")
 
 
+def fetch_installed_models() -> list[dict]:
+    """Return raw model entries from Ollama's /api/tags. Empty on failure."""
+    try:
+        response = requests.get(OLLAMA_TAGS_URL, timeout=TAGS_TIMEOUT)
+        response.raise_for_status()
+    except requests.RequestException:
+        return []
+    try:
+        return response.json().get("models", []) or []
+    except json.JSONDecodeError:
+        return []
+
+
+def _parse_param_size_b(size_str: str) -> float:
+    if not size_str:
+        return 0.0
+    cleaned = size_str.strip().rstrip("Bb").strip()
+    try:
+        return float(cleaned)
+    except ValueError:
+        return 0.0
+
+
+def is_recommended(model_info: dict) -> bool:
+    details = model_info.get("details") or {}
+    return _parse_param_size_b(details.get("parameter_size", "")) >= RECOMMENDED_MIN_PARAMS_B
+
+
 # ---------------------------------------------------------------------------
 # Tag parsing
 # ---------------------------------------------------------------------------
@@ -132,6 +166,7 @@ class ParaphraserApp(tk.Tk):
         self.minsize(900, 600)
 
         self._build_layout()
+        self._refresh_models()
 
     def _build_layout(self) -> None:
         controls = ttk.Frame(self, padding=(12, 12, 12, 6))
@@ -149,9 +184,26 @@ class ParaphraserApp(tk.Tk):
         self.section_dropdown.pack(side="left", padx=(6, 18))
 
         ttk.Label(controls, text="Ollama model:").pack(side="left")
-        self.model_var = tk.StringVar(value=DEFAULT_MODEL)
-        self.model_entry = ttk.Entry(controls, textvariable=self.model_var, width=20)
-        self.model_entry.pack(side="left", padx=(6, 18))
+        self.model_var = tk.StringVar(value="")
+        self.model_dropdown = ttk.Combobox(
+            controls,
+            textvariable=self.model_var,
+            state="readonly",
+            width=32,
+        )
+        self.model_dropdown.pack(side="left", padx=(6, 6))
+        self.model_dropdown.bind("<<ComboboxSelected>>", self._on_model_select)
+
+        self.refresh_button = ttk.Button(
+            controls, text="Refresh", command=self._refresh_models
+        )
+        self.refresh_button.pack(side="left", padx=(0, 6))
+
+        self.recommendation_var = tk.StringVar(value="")
+        self.recommendation_label = ttk.Label(
+            controls, textvariable=self.recommendation_var, foreground="#555"
+        )
+        self.recommendation_label.pack(side="left", padx=(0, 18))
 
         self.execute_button = ttk.Button(
             controls, text="Execute Paraphrase", command=self.on_execute
@@ -199,7 +251,13 @@ class ParaphraserApp(tk.Tk):
         if not source_text:
             messagebox.showwarning("Empty input", "Please paste source text first.")
             return
-        model = self.model_var.get().strip() or DEFAULT_MODEL
+        model = self._selected_model()
+        if not model:
+            messagebox.showwarning(
+                "No model selected",
+                "Pull a model with `ollama pull <name>` and click Refresh.",
+            )
+            return
 
         section = self.section_var.get()
         self.execute_button.configure(state="disabled")
@@ -236,6 +294,64 @@ class ParaphraserApp(tk.Tk):
         self.status_var.set("Error.")
         self.execute_button.configure(state="normal")
         messagebox.showerror("Ollama error", f"{type(exc).__name__}: {exc}")
+
+    # --------------------------------------------------------------------
+    # Model list / recommendation
+    # --------------------------------------------------------------------
+
+    def _refresh_models(self) -> None:
+        self.status_var.set("Fetching installed models from Ollama…")
+        self.update_idletasks()
+        models = fetch_installed_models()
+        if not models:
+            self.model_dropdown.configure(values=[])
+            self.model_var.set("")
+            self.recommendation_var.set("")
+            self.recommendation_label.configure(foreground="#555")
+            self.execute_button.configure(state="disabled")
+            self.status_var.set(
+                "No models found. Is Ollama running? Try `ollama pull <model>`."
+            )
+            return
+
+        decorated: list[tuple[bool, str, str]] = []
+        for entry in models:
+            name = entry.get("name", "")
+            if not name:
+                continue
+            rec = is_recommended(entry)
+            display = f"{name}{RECOMMENDED_SUFFIX}" if rec else name
+            # Sort key: recommended first, then name asc
+            decorated.append((not rec, name.lower(), display))
+        decorated.sort()
+        values = [display for _, _, display in decorated]
+
+        self.model_dropdown.configure(values=values)
+        if self.model_var.get() not in values:
+            self.model_var.set(values[0])
+        self._on_model_select()
+        self.execute_button.configure(state="normal")
+        self.status_var.set(f"{len(values)} model(s) available.")
+
+    def _on_model_select(self, _event: object | None = None) -> None:
+        raw = self.model_var.get().strip()
+        if raw.endswith(RECOMMENDED_SUFFIX):
+            self.recommendation_var.set("✓ Recommended for this task")
+            self.recommendation_label.configure(foreground="#2e7d32")
+        elif raw:
+            self.recommendation_var.set(
+                "⚠ Smaller model — paraphrasing quality may be limited"
+            )
+            self.recommendation_label.configure(foreground="#c62828")
+        else:
+            self.recommendation_var.set("")
+            self.recommendation_label.configure(foreground="#555")
+
+    def _selected_model(self) -> str:
+        raw = self.model_var.get().strip()
+        if raw.endswith(RECOMMENDED_SUFFIX):
+            raw = raw[: -len(RECOMMENDED_SUFFIX)]
+        return raw
 
 
 def main() -> None:
