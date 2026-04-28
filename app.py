@@ -18,7 +18,7 @@ import requests
 
 
 SECTIONS = ["Introduction", "Materials & Methods", "Results", "Conclusion"]
-DEFAULT_MODEL = "llama3.1"
+DEFAULT_MODEL = "qwen3.6:27b"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 REQUEST_TIMEOUT = 300  # seconds; local inference can be slow on first call
 

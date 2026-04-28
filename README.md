@@ -15,7 +15,7 @@ No API key. No internet. All inference runs locally via [Ollama](https://ollama.
   `sudo apt install python3-tk`)
 - [Ollama](https://ollama.com/download) installed and running on the same
   machine
-- At least one model pulled locally (the default is `llama3.1`)
+- At least one model pulled locally (the default is `qwen3.6:27b`)
 
 ## Setup
 
@@ -34,11 +34,11 @@ It listens on `http://localhost:11434`.
 ### 2. Pull a model
 
 ```bash
-ollama pull llama3.1
+ollama pull qwen3.6:27b
 ```
 
-You can pull any other Ollama-compatible model (e.g. `mistral`, `qwen2.5`,
-`llama3.1:70b`) and type its name into the **Ollama model** field in the
+You can pull any other Ollama-compatible model (e.g. `mistral`, `llama3.1`,
+`qwen2.5`) and type its name into the **Ollama model** field in the
 app at runtime.
 
 ### 3. Install Python deps
@@ -61,7 +61,7 @@ python app.py
 
 1. Pick a section from the **Section** dropdown
    (Introduction / Materials & Methods / Results / Conclusion).
-2. Confirm or change the **Ollama model** (defaults to `llama3.1`).
+2. Confirm or change the **Ollama model** (defaults to `qwen3.6:27b`).
 3. Paste the source text into the upper **Source Text** box.
 4. Click **Execute Paraphrase**.
 5. The rewritten text appears in the lower box. Spans the model changed
