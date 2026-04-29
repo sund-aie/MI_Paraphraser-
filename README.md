@@ -15,7 +15,8 @@ No API key. No internet. All inference runs locally via [Ollama](https://ollama.
   `sudo apt install python3-tk`)
 - [Ollama](https://ollama.com/download) installed and running on the same
   machine
-- At least one model pulled locally (the default is `qwen3.6:27b`)
+- At least one model pulled locally (the app discovers and lists every
+  model installed on your Ollama instance)
 
 ## Setup
 
@@ -33,13 +34,18 @@ It listens on `http://localhost:11434`.
 
 ### 2. Pull a model
 
+Pull any Ollama-compatible model. For this dense academic paraphrasing
+task, models with **≥ 13B parameters** are flagged as recommended in the
+UI (e.g. `qwen2.5:32b`, `llama3.1:70b`, `mixtral:8x7b`). Smaller models
+work but tend to drift from the strict style contract.
+
 ```bash
-ollama pull qwen3.6:27b
+ollama pull qwen2.5:32b
 ```
 
-You can pull any other Ollama-compatible model (e.g. `mistral`, `llama3.1`,
-`qwen2.5`) and type its name into the **Ollama model** field in the
-app at runtime.
+The app reads `GET /api/tags` from your local Ollama and populates the
+**Ollama model** dropdown with every installed model. Click **Refresh**
+in the UI after pulling a new one.
 
 ### 3. Install Python deps
 
@@ -61,7 +67,11 @@ python app.py
 
 1. Pick a section from the **Section** dropdown
    (Introduction / Materials & Methods / Results / Conclusion).
-2. Confirm or change the **Ollama model** (defaults to `qwen3.6:27b`).
+2. Pick a model from the **Ollama model** dropdown (lists every model
+   installed on your Ollama daemon; recommended models are tagged
+   `(recommended)` and a status label flags whether the current
+   selection is suitable). Click **Refresh** if you've just pulled a
+   new model.
 3. Paste the source text into the upper **Source Text** box.
 4. Click **Execute Paraphrase**.
 5. The rewritten text appears in the lower box. Spans the model changed
