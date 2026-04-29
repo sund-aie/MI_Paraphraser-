@@ -18,10 +18,11 @@ import requests
 
 
 SECTIONS = ["Introduction", "Materials & Methods", "Results", "Conclusion"]
-OLLAMA_URL = "http://localhost:11434/api/generate"
-OLLAMA_TAGS_URL = "http://localhost:11434/api/tags"
-REQUEST_TIMEOUT = 300  # seconds; local inference can be slow on first call
-TAGS_TIMEOUT = 10
+OLLAMA_BASE_URL = "http://localhost:11434"
+GENERATE_TIMEOUT = 600   # seconds; first call on a large model can take a while
+QUICK_TIMEOUT = 15       # seconds; ping / list / show
+NUM_CTX = 8192           # large context window for the dense system prompt
+KEEP_ALIVE = "10m"       # keep the model resident in RAM between requests
 
 # Models with at least this many billion parameters are flagged as
 # recommended for the dense, instruction-heavy paraphrasing task.
@@ -91,54 +92,190 @@ The backend must send the following strict operational mandates to the API for t
 
 
 # ---------------------------------------------------------------------------
-# Ollama call (local, offline)
+# Ollama client (local, offline)
 # ---------------------------------------------------------------------------
 
-def call_paraphraser(model: str, section: str, source_text: str) -> str:
-    user_message = (
-        f"[Section Variable]: {section}\n"
-        f"[Source Text]:\n{source_text}"
-    )
-    payload = {
-        "model": model,
-        "system": SYSTEM_PROMPT,
-        "prompt": user_message,
-        "stream": False,
-    }
-    try:
-        response = requests.post(OLLAMA_URL, json=payload, timeout=REQUEST_TIMEOUT)
-    except requests.ConnectionError as exc:
-        raise RuntimeError(
-            "Could not reach Ollama at http://localhost:11434. "
-            "Is the Ollama daemon running? Start it with `ollama serve`."
-        ) from exc
 
-    if response.status_code == 404:
-        raise RuntimeError(
-            f"Ollama reports model '{model}' is not available locally. "
-            f"Pull it first: `ollama pull {model}`."
-        )
-    response.raise_for_status()
+class OllamaError(RuntimeError):
+    """Raised for any Ollama-side failure with the most informative message
+    we can build from the response (parsed JSON `error` field, then the raw
+    body, then the HTTP reason)."""
 
-    try:
-        data = response.json()
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(f"Ollama returned non-JSON response: {response.text[:200]}") from exc
+    def __init__(self, message: str, *, status: int | None = None, hint: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.hint = hint
 
-    return data.get("response", "")
+    def detailed(self) -> str:
+        parts: list[str] = []
+        if self.status is not None:
+            parts.append(f"HTTP {self.status}")
+        parts.append(str(self))
+        if self.hint:
+            parts.append("\n\nHint: " + self.hint)
+        return " — ".join(parts[:2]) + ("".join(parts[2:]) if len(parts) > 2 else "")
 
 
-def fetch_installed_models() -> list[dict]:
-    """Return raw model entries from Ollama's /api/tags. Empty on failure."""
-    try:
-        response = requests.get(OLLAMA_TAGS_URL, timeout=TAGS_TIMEOUT)
-        response.raise_for_status()
-    except requests.RequestException:
-        return []
-    try:
-        return response.json().get("models", []) or []
-    except json.JSONDecodeError:
-        return []
+class OllamaClient:
+    """Thin wrapper over the Ollama HTTP API used by this app."""
+
+    def __init__(self, base_url: str = OLLAMA_BASE_URL, timeout: int = GENERATE_TIMEOUT):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = timeout
+        self.session = requests.Session()
+
+    # -- low-level ----------------------------------------------------
+
+    def _url(self, path: str) -> str:
+        return f"{self.base_url}{path}"
+
+    @staticmethod
+    def _extract_error(response: requests.Response) -> str:
+        """Pull the most useful error string out of an Ollama response."""
+        try:
+            data = response.json()
+        except (ValueError, json.JSONDecodeError):
+            data = None
+        if isinstance(data, dict):
+            err = data.get("error")
+            if err:
+                return str(err)
+        body = (response.text or "").strip()
+        return body[:400] if body else (response.reason or "unknown error")
+
+    @classmethod
+    def _hint_for(cls, status: int, message: str) -> str | None:
+        m = message.lower()
+        if status == 404 or "not found" in m or "no such" in m:
+            return "Pull the model first: `ollama pull <name>`, then click Refresh."
+        if "context" in m and ("exceed" in m or "length" in m or "too" in m):
+            return ("The system prompt + source text exceeds the model's context. "
+                    "Try shorter source text or a model with a larger context window.")
+        if any(k in m for k in ("memory", "out of memory", "oom", "cuda", "vram")):
+            return ("The model is too large for available memory. Try a smaller "
+                    "quantization (e.g. q4) or a smaller model.")
+        if "no such file" in m or "manifest" in m:
+            return "The model entry is corrupted. Re-pull it: `ollama pull <name>`."
+        return None
+
+    def _raise_http(self, response: requests.Response) -> None:
+        if response.ok:
+            return
+        msg = self._extract_error(response)
+        hint = self._hint_for(response.status_code, msg)
+        raise OllamaError(msg, status=response.status_code, hint=hint)
+
+    # -- public -------------------------------------------------------
+
+    def ping(self) -> dict:
+        """GET /api/version. Raises ConnectionError if the daemon is down."""
+        try:
+            r = self.session.get(self._url("/api/version"), timeout=QUICK_TIMEOUT)
+        except requests.ConnectionError as exc:
+            raise OllamaError(
+                f"Could not reach Ollama at {self.base_url}.",
+                hint="Start it with `ollama serve` (or open the Ollama desktop app).",
+            ) from exc
+        except requests.Timeout as exc:
+            raise OllamaError(
+                f"Ollama at {self.base_url} did not respond within {QUICK_TIMEOUT}s.",
+                hint="Check that the daemon is healthy.",
+            ) from exc
+        self._raise_http(r)
+        try:
+            return r.json()
+        except json.JSONDecodeError:
+            return {}
+
+    def list_models(self) -> list[dict]:
+        try:
+            r = self.session.get(self._url("/api/tags"), timeout=QUICK_TIMEOUT)
+        except requests.RequestException:
+            return []
+        if not r.ok:
+            return []
+        try:
+            return r.json().get("models", []) or []
+        except json.JSONDecodeError:
+            return []
+
+    def show_model(self, name: str) -> dict:
+        """POST /api/show — used as a pre-flight that the model can be loaded."""
+        try:
+            r = self.session.post(
+                self._url("/api/show"),
+                json={"model": name, "name": name},  # accept both new + old field
+                timeout=QUICK_TIMEOUT,
+            )
+        except requests.ConnectionError as exc:
+            raise OllamaError(
+                f"Could not reach Ollama at {self.base_url}.",
+                hint="Is the daemon running? Start it with `ollama serve`.",
+            ) from exc
+        self._raise_http(r)
+        try:
+            return r.json()
+        except json.JSONDecodeError:
+            return {}
+
+    def chat_stream(
+        self,
+        *,
+        model: str,
+        system: str,
+        user: str,
+        options: dict | None = None,
+        keep_alive: str | None = KEEP_ALIVE,
+    ):
+        """Yield (chunk_text, done) tuples from /api/chat with streaming on."""
+        payload: dict = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "stream": True,
+            "options": options or {"num_ctx": NUM_CTX},
+        }
+        if keep_alive is not None:
+            payload["keep_alive"] = keep_alive
+
+        try:
+            response = self.session.post(
+                self._url("/api/chat"),
+                json=payload,
+                timeout=self.timeout,
+                stream=True,
+            )
+        except requests.ConnectionError as exc:
+            raise OllamaError(
+                f"Could not reach Ollama at {self.base_url}.",
+                hint="Is the daemon running? Start it with `ollama serve`.",
+            ) from exc
+        except requests.Timeout as exc:
+            raise OllamaError(
+                f"Ollama did not start responding within {self.timeout}s.",
+            ) from exc
+
+        with response:
+            self._raise_http(response)
+            for line in response.iter_lines(decode_unicode=True):
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(obj, dict) and obj.get("error"):
+                    msg = str(obj["error"])
+                    raise OllamaError(msg, hint=self._hint_for(0, msg))
+                msg = obj.get("message", {}) if isinstance(obj, dict) else {}
+                chunk = msg.get("content", "") if isinstance(msg, dict) else ""
+                done = bool(obj.get("done")) if isinstance(obj, dict) else False
+                if chunk or done:
+                    yield chunk, done
+                if done:
+                    return
 
 
 def _parse_param_size_b(size_str: str) -> float:
@@ -161,6 +298,12 @@ def is_recommended(model_info: dict) -> bool:
 # ---------------------------------------------------------------------------
 
 CHANGED_TAG = re.compile(r"<changed>(.*?)</changed>", re.DOTALL)
+THINK_BLOCK = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+
+
+def strip_thinking(raw: str) -> str:
+    """Remove <think>...</think> reasoning blocks emitted by qwen3 / r1-style models."""
+    return THINK_BLOCK.sub("", raw)
 
 
 def split_changed_spans(raw: str) -> list[tuple[str, bool]]:
@@ -187,6 +330,8 @@ class ParaphraserApp(tk.Tk):
         self.title("MI Paraphraser — Dental Research Style Engine")
         self.geometry("1200x820")
         self.minsize(960, 640)
+
+        self.client = OllamaClient()
 
         self._apply_theme()
         self._build_layout()
@@ -367,7 +512,14 @@ class ParaphraserApp(tk.Tk):
             controls, text="↻  Refresh", command=self._refresh_models
         )
         self.refresh_button.grid(
-            row=1, column=2, sticky="w", padx=(0, 22), pady=(4, 0)
+            row=1, column=2, sticky="w", padx=(0, 8), pady=(4, 0)
+        )
+
+        self.test_button = ttk.Button(
+            controls, text="Test Connection", command=self._test_connection
+        )
+        self.test_button.grid(
+            row=1, column=3, sticky="w", padx=(0, 22), pady=(4, 0)
         )
 
         self.recommendation_var = tk.StringVar(value="")
@@ -377,7 +529,7 @@ class ParaphraserApp(tk.Tk):
             style="Recommend.TLabel",
         )
         self.recommendation_label.grid(
-            row=1, column=3, sticky="w", padx=(0, 22), pady=(4, 0)
+            row=1, column=4, sticky="w", padx=(0, 22), pady=(4, 0)
         )
 
         self.execute_button = ttk.Button(
@@ -386,8 +538,8 @@ class ParaphraserApp(tk.Tk):
             command=self.on_execute,
             style="Primary.TButton",
         )
-        self.execute_button.grid(row=1, column=4, sticky="e", pady=(4, 0))
-        controls.columnconfigure(4, weight=1)  # push primary action to the right
+        self.execute_button.grid(row=1, column=5, sticky="e", pady=(4, 0))
+        controls.columnconfigure(5, weight=1)  # push primary action to the right
 
         # ── Body: source / output text cards ──────────────────────────
         body = ttk.Frame(self, style="App.TFrame", padding=(24, 12, 24, 14))
@@ -456,25 +608,75 @@ class ParaphraserApp(tk.Tk):
             return
 
         section = self.section_var.get()
-        self.execute_button.configure(state="disabled")
-        self.status_var.set(f"Querying Ollama ({model}) for {section}…")
+        user_message = (
+            f"[Section Variable]: {section}\n"
+            f"[Source Text]:\n{source_text}"
+        )
+
+        self._set_busy(True)
+        self.status_var.set(f"Loading {model}…")
+
+        # Reset the output pane and stage it for live streaming
+        self.output_box.configure(state="normal")
+        self.output_box.delete("1.0", "end")
+        self.output_box.configure(state="disabled")
 
         thread = threading.Thread(
             target=self._run_request,
-            args=(model, section, source_text),
+            args=(model, user_message),
             daemon=True,
         )
         thread.start()
 
-    def _run_request(self, model: str, section: str, source_text: str) -> None:
+    def _run_request(self, model: str, user_message: str) -> None:
+        # Pre-flight: confirm the model can actually be loaded. This catches
+        # bad manifests / wrong names / corrupted pulls before we kick off
+        # the heavy generate call.
         try:
-            raw = call_paraphraser(model, section, source_text)
-            self.after(0, self._render_output, raw)
-        except Exception as exc:  # noqa: BLE001 — surface any backend error
+            self.client.show_model(model)
+        except OllamaError as exc:
             self.after(0, self._render_error, exc)
+            return
+        except Exception as exc:  # noqa: BLE001 - safety net
+            self.after(0, self._render_error, exc)
+            return
 
-    def _render_output(self, raw: str) -> None:
-        segments = split_changed_spans(raw)
+        self.after(0, self._on_stream_start, model)
+
+        chunks: list[str] = []
+        try:
+            for chunk, done in self.client.chat_stream(
+                model=model,
+                system=SYSTEM_PROMPT,
+                user=user_message,
+            ):
+                if chunk:
+                    chunks.append(chunk)
+                    self.after(0, self._append_streaming_chunk, chunk)
+                if done:
+                    break
+        except OllamaError as exc:
+            self.after(0, self._render_error, exc, "".join(chunks))
+            return
+        except Exception as exc:  # noqa: BLE001 - safety net
+            self.after(0, self._render_error, exc, "".join(chunks))
+            return
+
+        self.after(0, self._finalize_streaming, "".join(chunks))
+
+    def _on_stream_start(self, model: str) -> None:
+        self.status_var.set(f"Streaming from {model}…")
+
+    def _append_streaming_chunk(self, chunk: str) -> None:
+        self.output_box.configure(state="normal")
+        self.output_box.insert("end", chunk)
+        self.output_box.see("end")
+        self.output_box.configure(state="disabled")
+
+    def _finalize_streaming(self, raw: str) -> None:
+        # Drop reasoning blocks, then re-render with <changed> highlights
+        cleaned = strip_thinking(raw)
+        segments = split_changed_spans(cleaned)
         self.output_box.configure(state="normal")
         self.output_box.delete("1.0", "end")
         for text, is_changed in segments:
@@ -484,12 +686,61 @@ class ParaphraserApp(tk.Tk):
                 self.output_box.insert("end", text)
         self.output_box.configure(state="disabled")
         self.status_var.set("Done.")
-        self.execute_button.configure(state="normal")
+        self._set_busy(False)
 
-    def _render_error(self, exc: BaseException) -> None:
+    def _render_error(self, exc: BaseException, partial: str = "") -> None:
         self.status_var.set("Error.")
-        self.execute_button.configure(state="normal")
-        messagebox.showerror("Ollama error", f"{type(exc).__name__}: {exc}")
+        self._set_busy(False)
+        if partial:
+            # Keep what we managed to stream so the user can inspect it
+            self.output_box.configure(state="normal")
+            self.output_box.delete("1.0", "end")
+            self.output_box.insert("end", partial)
+            self.output_box.configure(state="disabled")
+        if isinstance(exc, OllamaError):
+            title = "Ollama error"
+            body = str(exc)
+            if exc.status is not None:
+                body = f"HTTP {exc.status}: {body}"
+            if exc.hint:
+                body = f"{body}\n\nHint: {exc.hint}"
+        else:
+            title = type(exc).__name__
+            body = str(exc) or repr(exc)
+        messagebox.showerror(title, body)
+
+    def _set_busy(self, busy: bool) -> None:
+        state = "disabled" if busy else "normal"
+        self.execute_button.configure(state=state)
+        self.refresh_button.configure(state=state)
+        self.test_button.configure(state=state)
+        self.model_dropdown.configure(state="disabled" if busy else "readonly")
+
+    # --------------------------------------------------------------------
+    # Connection diagnostics
+    # --------------------------------------------------------------------
+
+    def _test_connection(self) -> None:
+        self.status_var.set("Pinging Ollama…")
+        self.update_idletasks()
+        try:
+            info = self.client.ping()
+        except OllamaError as exc:
+            self.status_var.set("Ollama unreachable.")
+            body = str(exc) + (f"\n\nHint: {exc.hint}" if exc.hint else "")
+            messagebox.showerror("Connection failed", body)
+            return
+
+        version = info.get("version", "unknown")
+        models = self.client.list_models()
+        recommended_count = sum(1 for m in models if is_recommended(m))
+        message = (
+            f"Connected to Ollama at {self.client.base_url}\n\n"
+            f"Server version: {version}\n"
+            f"Installed models: {len(models)}  ({recommended_count} recommended)"
+        )
+        self.status_var.set(f"Ollama {version} · {len(models)} model(s)")
+        messagebox.showinfo("Connection OK", message)
 
     # --------------------------------------------------------------------
     # Model list / recommendation
@@ -498,12 +749,12 @@ class ParaphraserApp(tk.Tk):
     def _refresh_models(self) -> None:
         self.status_var.set("Fetching installed models from Ollama…")
         self.update_idletasks()
-        models = fetch_installed_models()
+        models = self.client.list_models()
         if not models:
             self.model_dropdown.configure(values=[])
             self.model_var.set("")
             self.recommendation_var.set("")
-            self.recommendation_label.configure(foreground="#555")
+            self.recommendation_label.configure(foreground=INK_SOFT)
             self.execute_button.configure(state="disabled")
             self.status_var.set(
                 "No models found. Is Ollama running? Try `ollama pull <model>`."
