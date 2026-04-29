@@ -28,6 +28,29 @@ TAGS_TIMEOUT = 10
 RECOMMENDED_MIN_PARAMS_B = 13.0
 RECOMMENDED_SUFFIX = " (recommended)"
 
+# ---------------------------------------------------------------------------
+# Theme — sunflower palette
+# ---------------------------------------------------------------------------
+
+PETAL = "#F5B82E"          # sunflower yellow (header / accents)
+PETAL_DEEP = "#E89B0E"     # darker yellow (secondary buttons)
+PETAL_HOVER = "#C97F00"    # button hover
+SEED = "#3D2914"           # sunflower-center brown (titles, primary button)
+SEED_HOVER = "#5C3D1F"
+STEM = "#5C7F2E"           # leaf green (positive accents)
+WARN = "#B85C00"           # warm warning brown
+CREAM = "#FFF7E0"          # app background
+PAPER = "#FFFFFF"          # card background
+INK = "#2B1810"            # body text
+INK_SOFT = "#7A6346"       # secondary / label text
+RULE = "#EAD9A8"           # subtle separators
+HIGHLIGHT_BG = "#FFE082"   # <changed> highlight
+HIGHLIGHT_FG = "#3D2914"
+DISABLED_BG = "#E8DCB7"
+DISABLED_FG = "#9C8770"
+
+UI_FONT = "Segoe UI"  # falls back to system default on platforms without it
+
 SYSTEM_PROMPT = r"""<target_author_profile>
 <author_identity>Dr. Maria Ibrahim, Assistant Professor, Preventive Dental Sciences (Pediatric Dentistry & Dental Biomaterials), Imam Abdulrahman Bin Faisal University</author_identity>
 
@@ -162,17 +185,157 @@ class ParaphraserApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("MI Paraphraser — Dental Research Style Engine")
-        self.geometry("1100x780")
-        self.minsize(900, 600)
+        self.geometry("1200x820")
+        self.minsize(960, 640)
 
+        self._apply_theme()
         self._build_layout()
         self._refresh_models()
 
+    def _apply_theme(self) -> None:
+        self.configure(bg=CREAM)
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        # Frames
+        style.configure("App.TFrame", background=CREAM)
+        style.configure("Header.TFrame", background=PETAL)
+        style.configure("Card.TFrame", background=PAPER)
+        style.configure("CardOuter.TFrame", background=RULE)
+        style.configure("Status.TFrame", background=CREAM)
+
+        # Labels
+        style.configure(
+            "Title.TLabel",
+            background=PETAL, foreground=SEED,
+            font=(UI_FONT, 24, "bold"),
+        )
+        style.configure(
+            "Subtitle.TLabel",
+            background=PETAL, foreground=SEED,
+            font=(UI_FONT, 11),
+        )
+        style.configure(
+            "FieldLabel.TLabel",
+            background=PAPER, foreground=INK_SOFT,
+            font=(UI_FONT, 9, "bold"),
+        )
+        style.configure(
+            "Section.TLabel",
+            background=CREAM, foreground=INK,
+            font=(UI_FONT, 11, "bold"),
+        )
+        style.configure(
+            "Status.TLabel",
+            background=CREAM, foreground=INK_SOFT,
+            font=(UI_FONT, 9),
+        )
+        style.configure(
+            "Recommend.TLabel",
+            background=PAPER, foreground=STEM,
+            font=(UI_FONT, 10, "bold"),
+        )
+
+        # Secondary button (Refresh)
+        style.configure(
+            "TButton",
+            padding=(14, 8),
+            background=PETAL_DEEP,
+            foreground=SEED,
+            font=(UI_FONT, 10, "bold"),
+            relief="flat", borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "TButton",
+            background=[("active", PETAL_HOVER), ("disabled", DISABLED_BG)],
+            foreground=[("disabled", DISABLED_FG)],
+        )
+
+        # Primary button (Execute)
+        style.configure(
+            "Primary.TButton",
+            padding=(22, 10),
+            background=SEED,
+            foreground=PETAL,
+            font=(UI_FONT, 11, "bold"),
+            relief="flat", borderwidth=0,
+            focusthickness=0,
+        )
+        style.map(
+            "Primary.TButton",
+            background=[("active", SEED_HOVER), ("disabled", DISABLED_BG)],
+            foreground=[("active", PETAL), ("disabled", DISABLED_FG)],
+        )
+
+        # Combobox
+        style.configure(
+            "TCombobox",
+            fieldbackground=PAPER,
+            background=PAPER,
+            foreground=INK,
+            arrowcolor=SEED,
+            selectbackground=PETAL,
+            selectforeground=SEED,
+            bordercolor=RULE,
+            lightcolor=RULE,
+            darkcolor=RULE,
+            padding=6,
+            relief="flat",
+        )
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", PAPER), ("disabled", DISABLED_BG)],
+            foreground=[("disabled", DISABLED_FG)],
+            bordercolor=[("focus", PETAL_DEEP)],
+        )
+        # Style the dropdown listbox attached to comboboxes
+        self.option_add("*TCombobox*Listbox.background", PAPER)
+        self.option_add("*TCombobox*Listbox.foreground", INK)
+        self.option_add("*TCombobox*Listbox.selectBackground", PETAL)
+        self.option_add("*TCombobox*Listbox.selectForeground", SEED)
+        self.option_add("*TCombobox*Listbox.font", (UI_FONT, 10))
+        self.option_add("*TCombobox*Listbox.borderWidth", 0)
+
     def _build_layout(self) -> None:
-        controls = ttk.Frame(self, padding=(12, 12, 12, 6))
+        # ── Header bar ────────────────────────────────────────────────
+        header = ttk.Frame(self, style="Header.TFrame", padding=(28, 22, 28, 22))
+        header.pack(fill="x")
+        ttk.Label(header, text="MI Paraphraser", style="Title.TLabel").pack(
+            anchor="w"
+        )
+        ttk.Label(
+            header,
+            text="Dental Research Style Engine — local, offline, section-aware",
+            style="Subtitle.TLabel",
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Thin brown rule under the header
+        tk.Frame(self, height=3, bg=SEED).pack(fill="x")
+
+        # ── Status bar (packed first so it pins to the bottom) ────────
+        statusbar = ttk.Frame(self, style="Status.TFrame", padding=(24, 8, 24, 12))
+        statusbar.pack(side="bottom", fill="x")
+        self.status_var = tk.StringVar(value="Ready.")
+        ttk.Label(
+            statusbar, textvariable=self.status_var, style="Status.TLabel"
+        ).pack(side="left")
+
+        # ── Control card ──────────────────────────────────────────────
+        control_wrap = ttk.Frame(self, style="App.TFrame", padding=(24, 18, 24, 8))
+        control_wrap.pack(fill="x")
+        # 1px tan outer frame fakes a card border without a real shadow
+        card_outer = ttk.Frame(control_wrap, style="CardOuter.TFrame", padding=1)
+        card_outer.pack(fill="x")
+        controls = ttk.Frame(card_outer, style="Card.TFrame", padding=(20, 16, 20, 16))
         controls.pack(fill="x")
 
-        ttk.Label(controls, text="Section:").pack(side="left")
+        ttk.Label(controls, text="SECTION", style="FieldLabel.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 8)
+        )
         self.section_var = tk.StringVar(value=SECTIONS[0])
         self.section_dropdown = ttk.Combobox(
             controls,
@@ -181,9 +344,13 @@ class ParaphraserApp(tk.Tk):
             state="readonly",
             width=22,
         )
-        self.section_dropdown.pack(side="left", padx=(6, 18))
+        self.section_dropdown.grid(
+            row=1, column=0, sticky="w", padx=(0, 22), pady=(4, 0)
+        )
 
-        ttk.Label(controls, text="Ollama model:").pack(side="left")
+        ttk.Label(controls, text="OLLAMA MODEL", style="FieldLabel.TLabel").grid(
+            row=0, column=1, sticky="w", padx=(0, 8)
+        )
         self.model_var = tk.StringVar(value="")
         self.model_dropdown = ttk.Combobox(
             controls,
@@ -191,55 +358,84 @@ class ParaphraserApp(tk.Tk):
             state="readonly",
             width=32,
         )
-        self.model_dropdown.pack(side="left", padx=(6, 6))
+        self.model_dropdown.grid(
+            row=1, column=1, sticky="w", padx=(0, 8), pady=(4, 0)
+        )
         self.model_dropdown.bind("<<ComboboxSelected>>", self._on_model_select)
 
         self.refresh_button = ttk.Button(
-            controls, text="Refresh", command=self._refresh_models
+            controls, text="↻  Refresh", command=self._refresh_models
         )
-        self.refresh_button.pack(side="left", padx=(0, 6))
+        self.refresh_button.grid(
+            row=1, column=2, sticky="w", padx=(0, 22), pady=(4, 0)
+        )
 
         self.recommendation_var = tk.StringVar(value="")
         self.recommendation_label = ttk.Label(
-            controls, textvariable=self.recommendation_var, foreground="#555"
+            controls,
+            textvariable=self.recommendation_var,
+            style="Recommend.TLabel",
         )
-        self.recommendation_label.pack(side="left", padx=(0, 18))
+        self.recommendation_label.grid(
+            row=1, column=3, sticky="w", padx=(0, 22), pady=(4, 0)
+        )
 
         self.execute_button = ttk.Button(
-            controls, text="Execute Paraphrase", command=self.on_execute
+            controls,
+            text="Execute Paraphrase",
+            command=self.on_execute,
+            style="Primary.TButton",
         )
-        self.execute_button.pack(side="left")
+        self.execute_button.grid(row=1, column=4, sticky="e", pady=(4, 0))
+        controls.columnconfigure(4, weight=1)  # push primary action to the right
 
-        self.status_var = tk.StringVar(value="Ready.")
-        ttk.Label(controls, textvariable=self.status_var, foreground="#555").pack(
-            side="right"
-        )
-
-        body = ttk.Frame(self, padding=(12, 6, 12, 12))
+        # ── Body: source / output text cards ──────────────────────────
+        body = ttk.Frame(self, style="App.TFrame", padding=(24, 12, 24, 14))
         body.pack(fill="both", expand=True)
         body.columnconfigure(0, weight=1)
         body.rowconfigure(1, weight=1)
         body.rowconfigure(3, weight=1)
 
-        ttk.Label(body, text="Source Text").grid(row=0, column=0, sticky="w")
+        ttk.Label(body, text="Source Text", style="Section.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(2, 6)
+        )
         self.input_box = scrolledtext.ScrolledText(
-            body, wrap="word", font=("TkDefaultFont", 11), height=12
+            body,
+            wrap="word",
+            font=(UI_FONT, 11),
+            bg=PAPER, fg=INK,
+            insertbackground=SEED,
+            relief="flat", borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=RULE,
+            highlightcolor=PETAL_DEEP,
+            padx=14, pady=12,
+            height=12,
         )
-        self.input_box.grid(row=1, column=0, sticky="nsew", pady=(2, 10))
+        self.input_box.grid(row=1, column=0, sticky="nsew", pady=(0, 16))
 
-        ttk.Label(body, text="Paraphrased Output (changes highlighted)").grid(
-            row=2, column=0, sticky="w"
-        )
+        ttk.Label(
+            body,
+            text="Paraphrased Output  ·  changes highlighted",
+            style="Section.TLabel",
+        ).grid(row=2, column=0, sticky="w", pady=(0, 6))
         self.output_box = scrolledtext.ScrolledText(
             body,
             wrap="word",
-            font=("TkDefaultFont", 11),
+            font=(UI_FONT, 11),
+            bg=PAPER, fg=INK,
+            insertbackground=SEED,
+            relief="flat", borderwidth=0,
+            highlightthickness=1,
+            highlightbackground=RULE,
+            highlightcolor=PETAL_DEEP,
+            padx=14, pady=12,
             height=12,
             state="disabled",
         )
-        self.output_box.grid(row=3, column=0, sticky="nsew", pady=(2, 0))
+        self.output_box.grid(row=3, column=0, sticky="nsew")
         self.output_box.tag_configure(
-            "changed", background="#FFF59D", foreground="#000000"
+            "changed", background=HIGHLIGHT_BG, foreground=HIGHLIGHT_FG
         )
 
     # --------------------------------------------------------------------
@@ -337,15 +533,15 @@ class ParaphraserApp(tk.Tk):
         raw = self.model_var.get().strip()
         if raw.endswith(RECOMMENDED_SUFFIX):
             self.recommendation_var.set("✓ Recommended for this task")
-            self.recommendation_label.configure(foreground="#2e7d32")
+            self.recommendation_label.configure(foreground=STEM)
         elif raw:
             self.recommendation_var.set(
                 "⚠ Smaller model — paraphrasing quality may be limited"
             )
-            self.recommendation_label.configure(foreground="#c62828")
+            self.recommendation_label.configure(foreground=WARN)
         else:
             self.recommendation_var.set("")
-            self.recommendation_label.configure(foreground="#555")
+            self.recommendation_label.configure(foreground=INK_SOFT)
 
     def _selected_model(self) -> str:
         raw = self.model_var.get().strip()
